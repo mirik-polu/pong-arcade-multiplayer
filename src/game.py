@@ -67,7 +67,7 @@ class PongGame(arcade.Window):
     def on_draw(self):
         self.clear()
 
-        # Центральная линия (используем draw_line, чтобы избежать проблем с Rect в 3.3.3)
+        # Центральная линия
         arcade.draw_line(SCREEN_WIDTH / 2, 0, SCREEN_WIDTH / 2, SCREEN_HEIGHT,
                          arcade.color.GRAY, line_width=4)
 
@@ -79,5 +79,8 @@ class PongGame(arcade.Window):
             anchor_x="center", anchor_y="center"
         )
 
+        # Ракетки (SpriteList.draw() работает корректно)
         self.paddle_list.draw()
-        self.ball.draw()
+
+        # ✅ Мяч: используем глобальную функцию (API Arcade 3.3+)
+        arcade.draw_sprite(self.ball)
