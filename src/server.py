@@ -1,9 +1,10 @@
-# server.py
 import socket
 import threading
 import json
 import time
 import random
+import sys
+import traceback
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 PADDLE_W, PADDLE_H = 20, 100
@@ -15,6 +16,7 @@ TICK_RATE = 60
 class PongServer:
     def __init__(self):
         self.clients = {}
+        self.clients_lock = threading.Lock()
         self.state = {
             "p1_y": SCREEN_HEIGHT // 2,
             "p2_y": SCREEN_HEIGHT // 2,
@@ -24,7 +26,7 @@ class PongServer:
             "bdy": BALL_SPEED,
             "score": [0, 0]
         }
-        self.lock = threading.Lock()
+        self.state_lock = threading.Lock()
         self.running = True
 
     def start(self):
@@ -34,56 +36,76 @@ class PongServer:
         s.listen(2)
         print("🟢 Сервер запущен на 0.0.0.0:5000. Ожидание игроков...")
 
-        # Ждём ровно 2 подключения
-        c1, addr1 = s.accept()
-        self.clients[c1] = {"side": 1, "up": False, "down": False}
-        print(f"✅ Игрок 1 подключился: {addr1}")
+        try:
+            # Ждём двух игроков
+            c1, addr1 = s.accept()
+            with self.clients_lock: self.clients[c1] = {"side": 1, "up": False, "down": False}
+            print(f"✅ Игрок 1 подключился: {addr1}")
 
-        c2, addr2 = s.accept()
-        self.clients[c2] = {"side": 2, "up": False, "down": False}
-        print(f"✅ Игрок 2 подключился: {addr2}")
+            c2, addr2 = s.accept()
+            with self.clients_lock: self.clients[c2] = {"side": 2, "up": False, "down": False}
+            print(f"✅ Игрок 2 подключился: {addr2}")
 
-        # Сообщаем клиентам их сторону
-        c1.sendall(json.dumps({"type": "assigned", "side": 1}).encode() + b"\n")
-        c2.sendall(json.dumps({"type": "assigned", "side": 2}).encode() + b"\n")
-        print("🎮 Игра началась!")
+            # Назначаем стороны
+            c1.sendall(json.dumps({"type": "assigned", "side": 1}).encode() + b"\n")
+            c2.sendall(json.dumps({"type": "assigned", "side": 2}).encode() + b"\n")
+            print("🎮 Игра началась!")
 
-        # Потоки ввода
-        for conn in self.clients:
-            threading.Thread(target=self.handle_input, args=(conn,), daemon=True).start()
+            # Запускаем потоки ввода
+            for conn in list(self.clients.keys()):
+                threading.Thread(target=self.handle_input, args=(conn,), daemon=True).start()
 
-        # Игровой цикл
-        dt = 1.0 / TICK_RATE
-        last_time = time.time()
-        while self.running:
-            time.sleep(max(0, dt - (time.time() - last_time)))
+            # Игровой цикл
+            dt = 1.0 / TICK_RATE
             last_time = time.time()
-            self.update()
-            self.broadcast()
+            while self.running:
+                time.sleep(max(0, dt - (time.time() - last_time)))
+                last_time = time.time()
+                self.update()
+                self.broadcast()
+
+        except Exception as e:
+            print(f"❌ Критическая ошибка: {e}")
+            traceback.print_exc()
+        finally:
+            self.running = False
+            print("🔴 Сервер остановлен.")
 
     def handle_input(self, conn):
         buffer = b""
         try:
             while self.running:
-                data = conn.recv(256)
-                if not data: break
+                data = conn.recv(4096)
+                if not data:  # Клиент закрыл соединение
+                    print("🔌 Клиент отключился")
+                    break
+
                 buffer += data
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
-                    msg = json.loads(line.decode())
-                    if msg["type"] == "input":
-                        self.clients[conn]["up"] = msg["action"] == "up"
-                        self.clients[conn]["down"] = msg["action"] == "down"
-                        if msg["action"] == "stop":
-                            self.clients[conn]["up"] = False
-                            self.clients[conn]["down"] = False
-        except Exception:
-            print("⚠️ Клиент отключился")
-        self.running = False
+                    try:
+                        msg = json.loads(line.decode())
+                        if msg.get("type") == "input":
+                            with self.clients_lock:
+                                if conn in self.clients:
+                                    action = msg.get("action")
+                                    self.clients[conn]["up"] = action == "up"
+                                    self.clients[conn]["down"] = action == "down"
+                                    if action == "stop":
+                                        self.clients[conn]["up"] = False
+                                        self.clients[conn]["down"] = False
+                    except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
+                        pass  # Игнорируем битые или неполные пакеты
+        except Exception as e:
+            print(f"⚠️ Ошибка в потоке ввода: {e}")
+        finally:
+            with self.clients_lock:
+                self.clients.pop(conn, None)
+            if not self.clients:
+                self.running = False  # Если все ушли, останавливаем сервер
 
     def update(self):
-        with self.lock:
-            # Движение ракеток
+        with self.clients_lock:
             for conn, info in self.clients.items():
                 target = "p1_y" if info["side"] == 1 else "p2_y"
                 if info["up"]:
@@ -91,41 +113,40 @@ class PongServer:
                 if info["down"]:
                     self.state[target] = max(PADDLE_H//2, self.state[target] - PADDLE_SPEED)
 
-            # Движение мяча
+        with self.state_lock:
             self.state["bx"] += self.state["bdx"]
             self.state["by"] += self.state["bdy"]
 
-            # Отскок от верха/низа
             if self.state["by"] > SCREEN_HEIGHT - BALL_R or self.state["by"] < BALL_R:
                 self.state["bdy"] *= -1
 
-            # Коллизии с ракетками (AABB vs Circle упрощённый)
+            # Коллизии (упрощённые)
             if self.state["bx"] - BALL_R <= 40 + PADDLE_W and \
-               self.state["by"] >= self.state["p1_y"] - PADDLE_H//2 and self.state["by"] <= self.state["p1_y"] + PADDLE_H//2:
+               self.state["p1_y"] - PADDLE_H//2 <= self.state["by"] <= self.state["p1_y"] + PADDLE_H//2:
                 self.state["bdx"] = abs(self.state["bdx"]) * 1.05
                 self.state["bx"] = 40 + PADDLE_W + BALL_R + 1
 
             if self.state["bx"] + BALL_R >= SCREEN_WIDTH - 40 - PADDLE_W and \
-               self.state["by"] >= self.state["p2_y"] - PADDLE_H//2 and self.state["by"] <= self.state["p2_y"] + PADDLE_H//2:
+               self.state["p2_y"] - PADDLE_H//2 <= self.state["by"] <= self.state["p2_y"] + PADDLE_H//2:
                 self.state["bdx"] = -abs(self.state["bdx"]) * 1.05
                 self.state["bx"] = SCREEN_WIDTH - 40 - PADDLE_W - BALL_R - 1
 
-            # Голы
             if self.state["bx"] < 0:
                 self.state["score"][1] += 1
-                self.reset_ball()
+                self._reset_ball()
             elif self.state["bx"] > SCREEN_WIDTH:
                 self.state["score"][0] += 1
-                self.reset_ball()
+                self._reset_ball()
 
-    def reset_ball(self):
+    def _reset_ball(self):
         self.state["bx"], self.state["by"] = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
         self.state["bdx"] = BALL_SPEED * random.choice([-1, 1])
         self.state["bdy"] = BALL_SPEED * random.choice([-1, 1])
 
     def broadcast(self):
-        payload = (json.dumps(self.state) + "\n").encode()
-        for conn in self.clients:
+        with self.state_lock:
+            payload = (json.dumps(self.state) + "\n").encode()
+        for conn in list(self.clients.keys()):
             try:
                 conn.sendall(payload)
             except Exception:

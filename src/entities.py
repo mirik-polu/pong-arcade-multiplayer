@@ -5,7 +5,7 @@ entities.py - Игровые объекты для Pong (Arcade 3.3.3)
 import arcade
 import os
 import random
-from src.constants import *
+from constants import *
 
 
 class Paddle(arcade.Sprite):

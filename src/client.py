@@ -4,8 +4,8 @@ import arcade
 import socket
 import threading
 import json
-from src.constants import *
-from src.entities import Paddle, Ball
+from constants import *
+from entities import Paddle, Ball
 
 
 class PongGame(arcade.Window):
@@ -31,7 +31,7 @@ class PongGame(arcade.Window):
     def connect_to_server(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            self.client.connect(("127.0.0.1", 5000))
+            self.client.connect(("193.233.245.251", 5000))
             print("📡 Подключено к серверу")
         except ConnectionRefusedError:
             print("❌ Сервер не найден. Запустите server.py")
