@@ -3,6 +3,7 @@ import threading
 import json
 import time
 import random
+import traceback
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 PADDLE_W, PADDLE_H = 20, 100
@@ -16,12 +17,9 @@ class PongServer:
         self.clients = {}
         self.clients_lock = threading.Lock()
         self.state = {
-            "p1_y": SCREEN_HEIGHT // 2,
-            "p2_y": SCREEN_HEIGHT // 2,
-            "bx": SCREEN_WIDTH // 2,
-            "by": SCREEN_HEIGHT // 2,
-            "bdx": BALL_SPEED,
-            "bdy": BALL_SPEED,
+            "p1_y": SCREEN_HEIGHT // 2, "p2_y": SCREEN_HEIGHT // 2,
+            "bx": SCREEN_WIDTH // 2, "by": SCREEN_HEIGHT // 2,
+            "bdx": BALL_SPEED, "bdy": BALL_SPEED,
             "score": [0, 0]
         }
         self.state_lock = threading.Lock()
@@ -35,13 +33,13 @@ class PongServer:
         print("🟢 Сервер запущен на 0.0.0.0:5000. Ожидание игроков...")
 
         try:
-            c1, addr1 = s.accept()
+            c1, _ = s.accept()
             with self.clients_lock: self.clients[c1] = {"side": 1, "up": False, "down": False}
-            print(f"✅ Игрок 1 подключился: {addr1}")
+            print("✅ Игрок 1 подключился")
 
-            c2, addr2 = s.accept()
+            c2, _ = s.accept()
             with self.clients_lock: self.clients[c2] = {"side": 2, "up": False, "down": False}
-            print(f"✅ Игрок 2 подключился: {addr2}")
+            print("✅ Игрок 2 подключился")
 
             c1.sendall(json.dumps({"type": "assigned", "side": 1}).encode() + b"\n")
             c2.sendall(json.dumps({"type": "assigned", "side": 2}).encode() + b"\n")
@@ -58,7 +56,8 @@ class PongServer:
                 self.update()
                 self.broadcast()
         except Exception as e:
-            print(f"❌ Ошибка сервера: {e}")
+            print(f"❌ Сервер упал: {e}")
+            traceback.print_exc()
         finally:
             self.running = False
             print("🔴 Сервер остановлен.")
@@ -68,9 +67,8 @@ class PongServer:
         try:
             while self.running:
                 data = conn.recv(4096)
-                if not data:  # ✅ ИСПРАВЛЕНО: была синтаксическая ошибка
+                if not data:  # ✅ ИСПРАВЛЕНО: было "if not   #"
                     break
-
                 buffer += data
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
@@ -93,7 +91,7 @@ class PongServer:
             with self.clients_lock:
                 self.clients.pop(conn, None)
                 print(f"🔌 Клиент отключился. Осталось: {len(self.clients)}")
-                if len(self.clients) == 0:
+                if not self.clients:
                     self.running = False
 
     def update(self):
