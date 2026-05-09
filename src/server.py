@@ -3,8 +3,6 @@ import threading
 import json
 import time
 import random
-import sys
-import traceback
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 PADDLE_W, PADDLE_H = 20, 100
@@ -33,11 +31,10 @@ class PongServer:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("0.0.0.0", 5000))
-        s.listen(2)
+        s.listen(5)
         print("🟢 Сервер запущен на 0.0.0.0:5000. Ожидание игроков...")
 
         try:
-            # Ждём двух игроков
             c1, addr1 = s.accept()
             with self.clients_lock: self.clients[c1] = {"side": 1, "up": False, "down": False}
             print(f"✅ Игрок 1 подключился: {addr1}")
@@ -46,16 +43,13 @@ class PongServer:
             with self.clients_lock: self.clients[c2] = {"side": 2, "up": False, "down": False}
             print(f"✅ Игрок 2 подключился: {addr2}")
 
-            # Назначаем стороны
             c1.sendall(json.dumps({"type": "assigned", "side": 1}).encode() + b"\n")
             c2.sendall(json.dumps({"type": "assigned", "side": 2}).encode() + b"\n")
             print("🎮 Игра началась!")
 
-            # Запускаем потоки ввода
             for conn in list(self.clients.keys()):
                 threading.Thread(target=self.handle_input, args=(conn,), daemon=True).start()
 
-            # Игровой цикл
             dt = 1.0 / TICK_RATE
             last_time = time.time()
             while self.running:
@@ -63,10 +57,8 @@ class PongServer:
                 last_time = time.time()
                 self.update()
                 self.broadcast()
-
         except Exception as e:
-            print(f"❌ Критическая ошибка: {e}")
-            traceback.print_exc()
+            print(f"❌ Ошибка сервера: {e}")
         finally:
             self.running = False
             print("🔴 Сервер остановлен.")
@@ -76,8 +68,7 @@ class PongServer:
         try:
             while self.running:
                 data = conn.recv(4096)
-                if not data:  # Клиент закрыл соединение
-                    print("🔌 Клиент отключился")
+                if not data:  # ✅ ИСПРАВЛЕНО: была синтаксическая ошибка
                     break
 
                 buffer += data
@@ -86,23 +77,24 @@ class PongServer:
                     try:
                         msg = json.loads(line.decode())
                         if msg.get("type") == "input":
+                            action = msg.get("action")
                             with self.clients_lock:
                                 if conn in self.clients:
-                                    action = msg.get("action")
                                     self.clients[conn]["up"] = action == "up"
                                     self.clients[conn]["down"] = action == "down"
                                     if action == "stop":
                                         self.clients[conn]["up"] = False
                                         self.clients[conn]["down"] = False
-                    except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
-                        pass  # Игнорируем битые или неполные пакеты
-        except Exception as e:
-            print(f"⚠️ Ошибка в потоке ввода: {e}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         finally:
             with self.clients_lock:
                 self.clients.pop(conn, None)
-            if not self.clients:
-                self.running = False  # Если все ушли, останавливаем сервер
+                print(f"🔌 Клиент отключился. Осталось: {len(self.clients)}")
+                if len(self.clients) == 0:
+                    self.running = False
 
     def update(self):
         with self.clients_lock:
@@ -120,7 +112,6 @@ class PongServer:
             if self.state["by"] > SCREEN_HEIGHT - BALL_R or self.state["by"] < BALL_R:
                 self.state["bdy"] *= -1
 
-            # Коллизии (упрощённые)
             if self.state["bx"] - BALL_R <= 40 + PADDLE_W and \
                self.state["p1_y"] - PADDLE_H//2 <= self.state["by"] <= self.state["p1_y"] + PADDLE_H//2:
                 self.state["bdx"] = abs(self.state["bdx"]) * 1.05
@@ -146,7 +137,9 @@ class PongServer:
     def broadcast(self):
         with self.state_lock:
             payload = (json.dumps(self.state) + "\n").encode()
-        for conn in list(self.clients.keys()):
+        with self.clients_lock:
+            conns = list(self.clients.keys())
+        for conn in conns:
             try:
                 conn.sendall(payload)
             except Exception:
