@@ -10,7 +10,7 @@ PADDLE_W, PADDLE_H = 20, 100
 BALL_R = 10
 PADDLE_SPEED = 5
 BALL_SPEED = 5
-TICK_RATE = 60
+TICK_RATE = 120
 
 class PongServer:
     def __init__(self):
