@@ -22,25 +22,25 @@ class PongGame(arcade.Window):
 
         self.assigned_side = None
 
-        # 🔐 Состояние с сервера
+        #  Состояние с сервера
         self.buffered_state = None
         self.prev_state = None
         self.state_lock = threading.Lock()
 
-        # 🎯 Интерполяция
-        self.interpolation_alpha = 1.0  # Начинаем с 1.0, чтобы сразу показать актуальное
+
+        self.interpolation_alpha = 1.0
         self.last_packet_time = 0
 
-        # 🎮 Клиентское предсказание
-        self.local_paddle_target = 0  # 1 = вверх, -1 = вниз, 0 = стоп
+        # предсказания
+        self.local_paddle_target = 0
         self.last_sent_input = None
 
-        # 🎾 Предсказание мяча
+        #  Предсказание мяча
         self.ball_velocity_x = BALL_SPEED
         self.ball_velocity_y = BALL_SPEED
         self.predicting_ball = False
 
-        # 📊 FPS
+        #  FPS
         self._fps_counter = 0
         self._fps_last_time = time.time()
         self._fps_display = 0
@@ -53,26 +53,26 @@ class PongGame(arcade.Window):
 
     def connect_to_server(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # 🔥 Отключаем Nagle
+        self.client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.client.settimeout(10)
         try:
             self.client.connect((SERVER_IP, SERVER_PORT))
-            self.client.settimeout(None)  # Блокирующий режим после подключения
-            print(f"📡 Подключено к {SERVER_IP}:{SERVER_PORT}")
+            self.client.settimeout(None)
+            print(f" Подключено к {SERVER_IP}:{SERVER_PORT}")
         except Exception as e:
-            print(f"❌ Ошибка подключения: {e}")
+            print(f" Ошибка подключения: {e}")
             arcade.close_window()
             sys.exit(1)
 
     def send_input(self, action: str):
         if action == self.last_sent_input:
-            return  # Не спамим одинаковыми действиями
+            return
         try:
             msg = json.dumps({"type": "input", "action": action}).encode() + b"\n"
             self.client.sendall(msg)
             self.last_sent_input = action
         except (BrokenPipeError, ConnectionResetError, OSError):
-            print("⚠️  Потеряно соединение при отправке")
+            print(" Потеряно соединение при отправке")
             self.running = False
 
     def on_key_press(self, key, _):
@@ -100,7 +100,7 @@ class PongGame(arcade.Window):
         while self.running:
             try:
                 data = self.client.recv(4096)
-                if not data:  # ✅ Важно: проверка на пустые данные
+                if not data:
                     break
                 buffer += data
                 while b"\n" in buffer and self.running:
@@ -114,22 +114,21 @@ class PongGame(arcade.Window):
                             print(f"🎮 Вы играете за ракетку {self.assigned_side}")
                         else:
                             with self.state_lock:
-                                self.buffered_state = msg  # 🔥 Просто сохраняем последнее состояние
-                                self.last_packet_time = time.time()  # 🔥 Обновляем таймстамп
-                                self.predicting_ball = True  # 🔥 Включаем предсказание
+                                self.buffered_state = msg
+                                self.last_packet_time = time.time()
+                                self.predicting_ball = True
                     except json.JSONDecodeError:
                         continue
             except (ConnectionResetError, BrokenPipeError, OSError):
-                print("⚠️  Соединение разорвано")
+                print("Соединение разорвано")
                 break
             except Exception as e:
-                print(f"❌ Ошибка в receive_loop: {e}")
+                print(f"Ошибка в receive_loop: {e}")
                 break
         self.running = False
         arcade.schedule_once(lambda dt: arcade.close_window(), 0.1)
 
     def on_update(self, delta_time: float):
-        # 📊 FPS counter
         self._fps_counter += 1
         now = time.time()
         if now - self._fps_last_time >= 1.0:
@@ -137,36 +136,35 @@ class PongGame(arcade.Window):
             self._fps_counter = 0
             self._fps_last_time = now
 
-        # 🎮 Клиентское предсказание: своя ракетка (работает всегда)
+        # Клиентское предсказание: своя ракетка
         if self.assigned_side is not None and self.local_paddle_target != 0:
             my_paddle = self.paddle1 if self.assigned_side == 1 else self.paddle2
             new_y = my_paddle.center_y + self.local_paddle_target * my_paddle.speed * delta_time * 60
             my_paddle.center_y = max(PADDLE_HEIGHT // 2, min(SCREEN_HEIGHT - PADDLE_HEIGHT // 2, new_y))
 
-        # 🎯 Обработка серверного состояния (ПРИОРИТЕТ №1)
+        # Обработка серверного состояния
         with self.state_lock:
             if self.buffered_state:
                 s = self.buffered_state
                 self.score = s.get("score", [0, 0])
 
-                # 🔥 Всегда обновляем скорость мяча с сервера
+                # скорость мяча с сервера
                 if "bdx" in s and "bdy" in s:
                     self.ball_velocity_x = s["bdx"]
                     self.ball_velocity_y = s["bdy"]
 
-                # 🔥 Интерполяция чужой ракетки
+                # чужая ракетка
                 if self.assigned_side == 1 and "p2_y" in s:
                     self.paddle2.center_y = self._lerp(self.paddle2.center_y, s["p2_y"], 0.15)
                 elif self.assigned_side == 2 and "p1_y" in s:
                     self.paddle1.center_y = self._lerp(self.paddle1.center_y, s["p1_y"], 0.15)
 
-                # 🔥 Мяч: сразу применяем серверную позицию + небольшая плавность
+                # доп плавность
                 if "bx" in s and "by" in s:
-                    # Плавное приближение к серверной позиции (коэффициент 0.2 = 5 кадров до точного попадания)
                     self.ball.center_x = self._lerp(self.ball.center_x, s["bx"], 0.2)
                     self.ball.center_y = self._lerp(self.ball.center_y, s["by"], 0.2)
 
-                # 🔥 Мягкая коррекция своей ракетки (чтобы не было рывков при рассинхроне)
+                # попытка спастись от рассихрона
                 if self.assigned_side is not None:
                     my_key = "p1_y" if self.assigned_side == 1 else "p2_y"
                     server_y = s.get(my_key)
@@ -174,18 +172,16 @@ class PongGame(arcade.Window):
                     if server_y is not None:
                         my_paddle.center_y = self._lerp(my_paddle.center_y, server_y, PADDLE_CORRECTION_FACTOR)
 
-        # 🎾 Предсказание мяча ТОЛЬКО если давно не было пакета от сервера (>100мс)
+        # если большой пинг то предсказания
         time_since_packet = time.time() - self.last_packet_time
         if time_since_packet > 0.1 and self.predicting_ball:
             self.ball.center_x += self.ball_velocity_x * delta_time * 60
             self.ball.center_y += self.ball_velocity_y * delta_time * 60
-            # Локальные отскоки от стен (для визуальной плавности)
             if self.ball.center_y - BALL_SIZE < 0 or self.ball.center_y + BALL_SIZE > SCREEN_HEIGHT:
                 self.ball_velocity_y *= -1
                 self.ball.center_y = max(BALL_SIZE, min(SCREEN_HEIGHT - BALL_SIZE, self.ball.center_y))
 
     def _lerp(self, start, end, alpha):
-        """Безопасная линейная интерполяция"""
         if start is None or end is None:
             return end if end is not None else start
         if alpha >= 0.99:
@@ -206,7 +202,7 @@ class PongGame(arcade.Window):
         arcade.draw_sprite(self.ball)
         # Статус
         if self.assigned_side is None:
-            arcade.draw_text("⏳ Ожидание назначения...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2,
+            arcade.draw_text(" Ожидание назначения...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2,
                              arcade.color.YELLOW, 18, anchor_x="center")
         # FPS
         arcade.draw_text(f"FPS: {self._fps_display}", 10, 10, arcade.color.WHITE, 12)

@@ -34,7 +34,7 @@ class PongServer:
         server_sock.bind(("0.0.0.0", SERVER_PORT))
         server_sock.listen(5)
         server_sock.settimeout(1.0)
-        print(f"Server started on 0.0.0.0:{SERVER_PORT}. Waiting for players...")
+        print(f"Ура сервер запустился 0.0.0.0:{SERVER_PORT}. ожидаем игроков")
 
         try:
             while self.running:
@@ -65,21 +65,21 @@ class PongServer:
             if len(self.clients) >= 2:
                 conn.sendall(json.dumps({"type": "full"}).encode() + b"\n")
                 conn.close()
-                print(f"Rejected connection from {addr}: server full")
+                print(f"нельзя {addr}: сервер заполнен")
                 return
 
             side = 1 if not any(c["side"] == 1 for c in self.clients.values()) else 2
             self.clients[conn] = {"side": side, "up": False, "down": False, "addr": addr}
 
         conn.sendall(json.dumps({"type": "assigned", "side": side}).encode() + b"\n")
-        print(f"Player {side} connected: {addr}")
+        print(f"игрок {side} подключился: {addr}")
 
         if not any(t.name == f"input_handler_{id(conn)}" for t in threading.enumerate()):
             t = threading.Thread(target=self.handle_input, args=(conn,), daemon=True, name=f"input_handler_{id(conn)}")
             t.start()
 
     def _start_game(self):
-        print("Game started: 2 players connected")
+        print("Игра началась")
         self.game_active = True
         self.tick_count = 0
         with self.state_lock:
@@ -121,17 +121,17 @@ class PongServer:
         with self.clients_lock:
             info = self.clients.pop(conn, None)
             if info:
-                print(f"Player {info['side']} disconnected: {info.get('addr', 'unknown')}")
+                print(f"Игрок {info['side']} ушёл(: {info.get('addr', 'unknown')}")
             remaining = len(self.clients)
 
         if remaining == 0:
-            print("No players left. Waiting for new connections...")
+            print("Нет игроков( Ждёём")
             self.game_active = False
             with self.state_lock:
                 self.state["score"] = [0, 0]
                 self._reset_ball()
         elif remaining == 1:
-            print("One player left. Waiting for opponent...")
+            print("Игрок ушёл. Ждём друга")
             self.game_active = False
         try:
             conn.close()
@@ -253,7 +253,7 @@ class PongServer:
 
 
 if __name__ == "__main__":
-    print("Starting Pong server...")
+    print("Сервер запустился")
     server = PongServer()
     threading.Thread(target=server.game_loop, daemon=True).start()
     server.start()
