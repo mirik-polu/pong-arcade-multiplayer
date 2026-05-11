@@ -9,7 +9,7 @@ from constants import *
 from entities import Paddle, Ball
 
 class PongGame(arcade.Window):
-    def __init__(self, player_side: int):
+    def __init__(self):
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, "🏓 Online Pong")
         self.background_color = arcade.color.DARK_BLUE_GRAY
         self.score = [0, 0]
@@ -20,7 +20,6 @@ class PongGame(arcade.Window):
         self.paddle_list = arcade.SpriteList()
         self.paddle_list.extend([self.paddle1, self.paddle2])
 
-        self.player_side = player_side
         self.assigned_side = None
 
         # 🔐 Состояние с сервера
@@ -101,7 +100,7 @@ class PongGame(arcade.Window):
         while self.running:
             try:
                 data = self.client.recv(4096)
-                if not data:
+                if not data:  # ✅ Важно: проверка на пустые данные
                     break
                 buffer += data
                 while b"\n" in buffer and self.running:
@@ -115,10 +114,9 @@ class PongGame(arcade.Window):
                             print(f"🎮 Вы играете за ракетку {self.assigned_side}")
                         else:
                             with self.state_lock:
-                                self.prev_state = self.buffered_state
-                                self.buffered_state = msg
-                                self.last_packet_time = time.time()
-                                # 🔥 НЕ сбрасываем alpha — продолжаем интерполяцию
+                                self.buffered_state = msg  # 🔥 Просто сохраняем последнее состояние
+                                self.last_packet_time = time.time()  # 🔥 Обновляем таймстамп
+                                self.predicting_ball = True  # 🔥 Включаем предсказание
                     except json.JSONDecodeError:
                         continue
             except (ConnectionResetError, BrokenPipeError, OSError):
@@ -139,75 +137,52 @@ class PongGame(arcade.Window):
             self._fps_counter = 0
             self._fps_last_time = now
 
-        # 🎮 Клиентское предсказание: своя ракетка
+        # 🎮 Клиентское предсказание: своя ракетка (работает всегда)
         if self.assigned_side is not None and self.local_paddle_target != 0:
             my_paddle = self.paddle1 if self.assigned_side == 1 else self.paddle2
             new_y = my_paddle.center_y + self.local_paddle_target * my_paddle.speed * delta_time * 60
             my_paddle.center_y = max(PADDLE_HEIGHT // 2, min(SCREEN_HEIGHT - PADDLE_HEIGHT // 2, new_y))
 
-        # 🎾 Предсказание мяча между пакетами
-        if self.predicting_ball:
-            self.ball.center_x += self.ball_velocity_x * delta_time * 60
-            self.ball.center_y += self.ball_velocity_y * delta_time * 60
-            # Локальные отскоки от стен (для плавности)
-            if self.ball.center_y - BALL_SIZE < 0 or self.ball.center_y + BALL_SIZE > SCREEN_HEIGHT:
-                self.ball_velocity_y *= -1
-                self.ball.center_y = max(BALL_SIZE, min(SCREEN_HEIGHT - BALL_SIZE, self.ball.center_y))
-
-        # 🎯 Интерполяция от сервера
+        # 🎯 Обработка серверного состояния (ПРИОРИТЕТ №1)
         with self.state_lock:
             if self.buffered_state:
                 s = self.buffered_state
                 self.score = s.get("score", [0, 0])
 
-                if self.prev_state and self.interpolation_alpha < 1.0:
-                    # 🔥 Плавно увеличиваем alpha
-                    self.interpolation_alpha = min(1.0, self.interpolation_alpha + delta_time * INTERPOLATION_SPEED)
-                    alpha = self.interpolation_alpha
+                # 🔥 Всегда обновляем скорость мяча с сервера
+                if "bdx" in s and "bdy" in s:
+                    self.ball_velocity_x = s["bdx"]
+                    self.ball_velocity_y = s["bdy"]
 
-                    # Чужая ракетка
-                    if self.assigned_side == 1:
-                        self.paddle2.center_y = self._lerp(self.prev_state.get("p2_y"), s.get("p2_y"), alpha)
-                    else:
-                        self.paddle1.center_y = self._lerp(self.prev_state.get("p1_y"), s.get("p1_y"), alpha)
+                # 🔥 Интерполяция чужой ракетки
+                if self.assigned_side == 1 and "p2_y" in s:
+                    self.paddle2.center_y = self._lerp(self.paddle2.center_y, s["p2_y"], 0.15)
+                elif self.assigned_side == 2 and "p1_y" in s:
+                    self.paddle1.center_y = self._lerp(self.paddle1.center_y, s["p1_y"], 0.15)
 
-                    # 🎾 Мяч: интерполяция + берём скорость с сервера
-                    prev_bx = self.prev_state.get("bx", s.get("bx"))
-                    prev_by = self.prev_state.get("by", s.get("by"))
-                    curr_bx = s.get("bx")
-                    curr_by = s.get("by")
+                # 🔥 Мяч: сразу применяем серверную позицию + небольшая плавность
+                if "bx" in s and "by" in s:
+                    # Плавное приближение к серверной позиции (коэффициент 0.2 = 5 кадров до точного попадания)
+                    self.ball.center_x = self._lerp(self.ball.center_x, s["bx"], 0.2)
+                    self.ball.center_y = self._lerp(self.ball.center_y, s["by"], 0.2)
 
-                    self.ball.center_x = self._lerp(prev_bx, curr_bx, alpha)
-                    self.ball.center_y = self._lerp(prev_by, curr_by, alpha)
-
-                    # 🔥 Берём скорость напрямую с сервера для предсказания
-                    if "bdx" in s and "bdy" in s:
-                        self.ball_velocity_x = s["bdx"]
-                        self.ball_velocity_y = s["bdy"]
-                    self.predicting_ball = True
-
-                elif not self.prev_state:
-                    # Первый кадр — сразу показываем актуальное
-                    if self.assigned_side == 1:
-                        self.paddle2.center_y = s.get("p2_y", SCREEN_HEIGHT // 2)
-                    else:
-                        self.paddle1.center_y = s.get("p1_y", SCREEN_HEIGHT // 2)
-                    self.ball.center_x = s.get("bx", SCREEN_WIDTH // 2)
-                    self.ball.center_y = s.get("by", SCREEN_HEIGHT // 2)
-                    self.ball_velocity_x = s.get("bdx", BALL_SPEED)
-                    self.ball_velocity_y = s.get("bdy", BALL_SPEED)
-                    self.predicting_ball = True
-                    self.interpolation_alpha = 1.0
-                    self.prev_state = s  # Инициализируем prev для следующего кадра
-
-                # 🔥 Мягкая коррекция своей ракетки (без рэбербэндинга)
+                # 🔥 Мягкая коррекция своей ракетки (чтобы не было рывков при рассинхроне)
                 if self.assigned_side is not None:
                     my_key = "p1_y" if self.assigned_side == 1 else "p2_y"
                     server_y = s.get(my_key)
                     my_paddle = self.paddle1 if self.assigned_side == 1 else self.paddle2
                     if server_y is not None:
-                        # Всегда немного тянем к серверному значению
                         my_paddle.center_y = self._lerp(my_paddle.center_y, server_y, PADDLE_CORRECTION_FACTOR)
+
+        # 🎾 Предсказание мяча ТОЛЬКО если давно не было пакета от сервера (>100мс)
+        time_since_packet = time.time() - self.last_packet_time
+        if time_since_packet > 0.1 and self.predicting_ball:
+            self.ball.center_x += self.ball_velocity_x * delta_time * 60
+            self.ball.center_y += self.ball_velocity_y * delta_time * 60
+            # Локальные отскоки от стен (для визуальной плавности)
+            if self.ball.center_y - BALL_SIZE < 0 or self.ball.center_y + BALL_SIZE > SCREEN_HEIGHT:
+                self.ball_velocity_y *= -1
+                self.ball.center_y = max(BALL_SIZE, min(SCREEN_HEIGHT - BALL_SIZE, self.ball.center_y))
 
     def _lerp(self, start, end, alpha):
         """Безопасная линейная интерполяция"""
@@ -246,9 +221,6 @@ class PongGame(arcade.Window):
         super().on_close()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("1", "2"):
-        print("Использование: python client.py 1  (или 2)")
-        sys.exit(1)
-    print(f"🚀 Запуск клиента (сторона {sys.argv[1]})...")
-    game = PongGame(player_side=int(sys.argv[1]))
+    print("Starting client...")
+    game = PongGame()
     arcade.run()
