@@ -10,3 +10,9 @@ PADDLE_SPEED = 8
 BALL_SPEED = 7
 
 ASSETS_DIR = "assets/textures"
+
+TICK_RATE = 60
+SERVER_IP = "193.233.245.251"
+SERVER_PORT = 5000
+INTERPOLATION_SPEED = 15  # Коэффициент плавности интерполяции
+PADDLE_CORRECTION_FACTOR = 0.08  # Мягкая коррекция своей ракетки

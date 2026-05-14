@@ -79,8 +79,6 @@ class PongGame(arcade.Window):
             anchor_x="center", anchor_y="center"
         )
 
-        # Ракетки (SpriteList.draw() работает корректно)
         self.paddle_list.draw()
 
-        # ✅ Мяч: используем глобальную функцию (API Arcade 3.3+)
         arcade.draw_sprite(self.ball)
